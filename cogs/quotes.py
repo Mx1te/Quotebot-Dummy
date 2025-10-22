@@ -1,69 +1,94 @@
 import discord
-from discord import app_commands
 from discord.ext import commands
+from discord import option
 
-QUOTE_CHANNEL_ID = 1430117565316993097  # ID deines Quote-Channels
-
-
-class Quotes(commands.Cog):
+class QuoteCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        # Standardwerte (kann man später über Slash Commands ändern)
+        self.quote_channel_id = None
+        self.quote_emoji = "⭐"
+        self.min_reactions = 1
 
-    @app_commands.command(
-        name="quote",
-        description="Postet eine Nachricht oder mehrere Nachrichten in den Quote-Channel"
-    )
-    @app_commands.describe(
-        messages="Die Message-Links, die zitiert werden sollen (getrennt durch Leerzeichen)"
-    )
-    async def quote(self, interaction: discord.Interaction, messages: str):
-        channel = self.bot.get_channel(QUOTE_CHANNEL_ID)
-        if not channel:
-            await interaction.response.send_message("❌ Quote-Channel nicht gefunden.", ephemeral=True)
+    # === REAKTIONEN BEOBACHTEN ===
+    @commands.Cog.listener()
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
+        if not self.quote_channel_id:
+            return  # Kein Quote-Channel gesetzt
+
+        if str(payload.emoji) != self.quote_emoji:
             return
 
-        message_links = messages.split()
-        success, failed = [], []
+        if payload.user_id == self.bot.user.id:
+            return
 
-        for link in message_links:
-            try:
-                parts = link.split("/")
-                guild_id, channel_id, message_id = int(parts[-3]), int(parts[-2]), int(parts[-1])
-                msg_channel = self.bot.get_channel(channel_id)
-                msg = await msg_channel.fetch_message(message_id)
+        guild = self.bot.get_guild(payload.guild_id)
+        channel = guild.get_channel(payload.channel_id)
+        message = await channel.fetch_message(payload.message_id)
 
-                embed = discord.Embed(
-                    description=msg.content if msg.content else "*(Keine Textnachricht)*",
-                    color=discord.Color.gold()
-                )
-                embed.set_author(
-                    name=msg.author.display_name,
-                    icon_url=msg.author.display_avatar.url
-                )
-                embed.add_field(name="Original", value=f"[Jump to message]({link})")
+        # Prüfen, ob genügend Reaktionen vorhanden sind
+        reaction = discord.utils.get(message.reactions, emoji=self.quote_emoji)
+        if not reaction or reaction.count < self.min_reactions:
+            return
 
-                for attachment in msg.attachments:
-                    if attachment.content_type and attachment.content_type.startswith("image"):
-                        embed.set_image(url=attachment.url)
-                    else:
-                        embed.add_field(name="Anhang", value=f"[{attachment.filename}]({attachment.url})", inline=False)
+        quote_channel = guild.get_channel(self.quote_channel_id)
+        if not quote_channel:
+            print("⚠️ Quote-Channel nicht gefunden!")
+            return
 
-                await channel.send(embed=embed)
-                success.append(link)
-            except Exception as e:
-                print(f"Fehler bei {link}: {e}")
-                failed.append(link)
+        quote_link = f"https://discord.com/channels/{guild.id}/{channel.id}/{message.id}"
 
-        reply_text = ""
-        if success:
-            reply_text += f"✅ Erfolgreich zitiert:\n" + "\n".join(success) + "\n"
-        if failed:
-            reply_text += f"❌ Fehler bei:\n" + "\n".join(failed)
+        # Doppelte Quotes vermeiden
+        async for msg in quote_channel.history(limit=100):
+            if quote_link in msg.content:
+                return
 
-        await interaction.response.send_message(reply_text, ephemeral=True)
+        embed = discord.Embed(
+            description=message.content or "*[Keine Nachricht]*",
+            color=discord.Color.gold()
+        )
+        embed.set_author(name=message.author.display_name, icon_url=message.author.display_avatar.url)
+        embed.add_field(name="Link", value=f"[Zur Nachricht]({quote_link})", inline=False)
+        embed.timestamp = message.created_at
 
+        if message.attachments:
+            embed.set_image(url=message.attachments[0].url)
+
+        await quote_channel.send(embed=embed)
+        print(f"⭐ Nachricht von {message.author} wurde gequotet!")
+
+    # === SLASH BEFEHLE ===
+    @commands.slash_command(description="Setze den Kanal, in den Quotes gepostet werden.")
+    @option("channel", discord.TextChannel, description="Der Kanal, in den gequotete Nachrichten gepostet werden sollen.")
+    async def setquotechannel(self, ctx: discord.ApplicationContext, channel: discord.TextChannel):
+        self.quote_channel_id = channel.id
+        await ctx.respond(f"✅ Quote-Channel wurde auf {channel.mention} gesetzt.", ephemeral=True)
+
+    @commands.slash_command(description="Setze das Emoji, das für Quotes verwendet wird.")
+    @option("emoji", str, description="Das Emoji, das Quotes auslösen soll (z. B. ⭐)")
+    async def setquoteemoji(self, ctx: discord.ApplicationContext, emoji: str):
+        self.quote_emoji = emoji
+        await ctx.respond(f"✅ Quote-Emoji wurde auf `{emoji}` gesetzt.", ephemeral=True)
+
+    @commands.slash_command(description="Setze, wie viele Reaktionen benötigt werden, bevor gequotet wird.")
+    @option("count", int, description="Anzahl benötigter Reaktionen", min_value=1, max_value=10)
+    async def setquotethreshold(self, ctx: discord.ApplicationContext, count: int):
+        self.min_reactions = count
+        await ctx.respond(f"✅ Mindestanzahl der Reaktionen auf `{count}`` gesetzt.", ephemeral=True)
+
+    @commands.slash_command(description="Zeigt die aktuelle Quote-Konfiguration.")
+    async def quoteinfo(self, ctx: discord.ApplicationContext):
+        channel = f"<#{self.quote_channel_id}>" if self.quote_channel_id else "❌ Nicht gesetzt"
+        await ctx.respond(
+            f"📋 **Quote-Einstellungen:**\n"
+            f"**Channel:** {channel}\n"
+            f"**Emoji:** {self.quote_emoji}\n"
+            f"**Mindestreaktionen:** {self.min_reactions}",
+            ephemeral=True
+        )
 
 async def setup(bot):
-    await bot.add_cog(Quotes(bot))
+    await bot.add_cog(QuoteCog(bot))
+
 
     

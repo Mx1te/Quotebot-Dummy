@@ -6,70 +6,38 @@ import asyncio
 
 load_dotenv()
 
+try:
+    asyncio.get_running_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
+# === KONFIGURATION ===
+TOKEN = os.getenv("DISCORD_TOKEN")
+GUILD_ID = int(os.getenv("GUILD_ID"))
+# =======================
+
 intents = discord.Intents.default()
 intents.message_content = True
+intents.reactions = True
+intents.messages = True
+intents.guilds = True
 
-bot = commands.Bot(
-    command_prefix=os.getenv("BOT_PREFIX"),
-    intents=intents,
-    application_id=int(os.getenv("APPLICATION_ID"))  # int statt str
-)
+bot = commands.Bot(command_prefix=os.getenv("BOT_PREFIX"), intents=intents)
 
-GUILD_ID = int(os.getenv("GUILD_ID"))  # Server für schnelle Slash Command-Synchronisation
-
-# ------------------ Events ------------------
 @bot.event
 async def on_ready():
-    print(f"✅ Eingeloggt als {bot.user}")
+    print(f"✅ Eingeloggt als {bot.user} ({bot.user.id})")
 
-    # Slash Commands server-spezifisch synchronisieren
+@bot.event
+async def setup_hook():
+    # Cog laden
+    await bot.load_extension("cogs.quote")
+    print("📚 Cog 'quote' geladen!")
+
     guild = discord.Object(id=GUILD_ID)
-    synced = await bot.tree.sync(guild=guild)
-    print(f"🔄 {len(synced)} Slash Commands synchronisiert")
+    await bot.sync_commands(guild_ids=[guild.id])
+    print(f"🔁 Slash-Befehle synchronisiert (server-spezifisch: {GUILD_ID})")
 
-# ------------------ Cogs laden ------------------
-async def load_cogs():
-    for filename in os.listdir("./cogs"):
-        if filename.endswith(".py"):
-            try:
-                await bot.load_extension(f"cogs.{filename[:-3]}")
-                print(f"✅ Cog geladen: {filename}")
-            except Exception as e:
-                print(f"❌ Fehler beim Laden von {filename}: {e}")
+bot.run(TOKEN)
 
-# ------------------ Admin-Befehle ------------------
-@bot.command()
-@commands.is_owner()
-async def reload(ctx, extension: str = None):
-    if extension:
-        try:
-            await bot.unload_extension(f"cogs.{extension}")
-            await bot.load_extension(f"cogs.{extension}")
-            await ctx.send(f"✅ `{extension}` neu geladen")
-        except Exception as e:
-            await ctx.send(f"❌ Fehler beim Laden von `{extension}`:\n{e}")
-    else:
-        for filename in os.listdir("./cogs"):
-            if filename.endswith(".py"):
-                name = filename[:-3]
-                try:
-                    await bot.unload_extension(f"cogs.{name}")
-                    await bot.load_extension(f"cogs.{name}")
-                    await ctx.send(f"✅ `{name}` neu geladen")
-                except Exception as e:
-                    await ctx.send(f"❌ Fehler bei `{name}`:\n{e}")
-
-    # Slash Commands synchronisieren
-    guild = discord.Object(id=GUILD_ID)
-    synced = await bot.tree.sync(guild=guild)
-    await ctx.send(f"🔄 {len(synced)} Slash Commands synchronisiert.")
-
-# ------------------ Bot starten ------------------
-async def main():
-    async with bot:
-        await load_cogs()
-        await bot.start(os.getenv("DISCORD_TOKEN"))
-
-if __name__ == "__main__":
-    asyncio.run(main())
 
